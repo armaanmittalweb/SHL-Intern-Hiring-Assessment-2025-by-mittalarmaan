@@ -47,65 +47,22 @@ outputs_genai/     # artifacts, including submission.csv
 ## 🧱 End‑to‑End Pipeline
 
 ```mermaid
-flowchart LR
-    A[CSVs: train/test] --> B[Auto infer ID & label columns]
-    B --> C[Stratified KFold (5)]
-    C --> D[WaveDataset + Augment + Crop/Pad]
-    D --> E[SSL Backbone (frozen)\nWavLM/W2V2 -> [B,T,C]]
-    E --> F[PromptHead\n(prompts + MHA + FFN)]
-    F --> G1[Head_cls -> logits]
-    F --> G2[Head_reg -> scalar]
-    G1 --> H1[CE + KLD (LDL)]
-    G2 --> H2[MSE]
-    G1--EV-->J[Consistency\n(EV vs Reg)]
-    H1 --> I[Weighted multi‑loss]
-    H2 --> I
-    J --> I
-    I --> K[Early‑stopped model per fold]
-    K --> L[OOF: probs/reg/feats]
-    L --> M[Isotonic calib (per fold)]
-    L --> N[kNN on pooled feats]
-    M --> O[Blend: EV, Reg, kNN, (EV+Reg)/2]
-    N --> O
-    O --> P[Test‑time TTA + fold‑avg]
-    P --> Q[Round to 0.5 & clip]
-    Q --> R[submission.csv]
-```
-
----
-
-## 🧠 Model Architecture
-
-### 1) SSL Backbone (frozen)
-
-* Picked via `torchaudio.pipelines` auto‑probe (prefers `WAVLM_BASE_PLUS`, falls back to `WAV2VEC2_BASE` / `WAV2VEC2_ASR_BASE_960H`).
-* Inputs: mono float32 wave @ backbone SR; Outputs: `[B, T, C]` frame embeddings.
-
-### 2) **PromptHead** (trainable)
-
-* Parameters: `n_prompts = 9`, `n_heads = 6`, hidden dim = backbone C
-* Learnable **prompt tokens** `P ∈ R^{n_prompts×C}` query the sequence via **Multi‑Head Attention**:
-
-```mermaid
 flowchart TB
     subgraph Sequence
-    X1[feat t1] --> X2[feat t2] --> X3[...]
+        X1[feat t1] --> X2[feat t2] --> X3[...]
     end
-    subgraph Prompts (learned)
-    P1((p1))
-    P2((p2))
-    Pn((p9))
+    subgraph Prompts
+        P1((p1))
+        P2((p2))
+        P9((p9))
     end
     P1 -- Q,K,V=feats --> ATTN[MHA]
     P2 -- Q,K,V=feats --> ATTN
-    Pn -- Q,K,V=feats --> ATTN
-    ATTN --> Pool[mean over prompts]
-    Pool --> FFN[LayerNorm→Linear→ReLU→Dropout→Linear→LayerNorm]
-    FFN --> Heads
-    subgraph Heads
-    CLS[Linear→n_classes]
-    REG[Linear→1]
-    end
+    P9 -- Q,K,V=feats --> ATTN
+    ATTN --> POOL[Mean over prompts]
+    POOL --> FFN[LayerNorm → Linear → ReLU → Dropout → Linear → LayerNorm]
+    FFN --> CLS[Linear → n_classes]
+    FFN --> REG[Linear → 1]
 ```
 
 * **Outputs**: logits (classification), scalar (regression), pooled embedding (for kNN).
